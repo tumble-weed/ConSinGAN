@@ -86,11 +86,18 @@ class GrowingGenerator(nn.Module):
         self.tail = nn.Sequential(
             nn.Conv2d(N, opt.nc_im, kernel_size=opt.ker_size, padding=opt.padd_size),
             nn.Tanh())
-
+        self.taps = []
+        self.tails = []
     def init_next_stage(self):
+        shallow_copy = copy.copy(self.body)
+        self.taps.append(self.body)
+        last_tail = copy.deepcopy(self.tail)
+        for p in last_tail.parameters():
+            p.requires_grad = False
+        self.tails.append(last_tail)
         self.body.append(copy.deepcopy(self.body[-1]))
-
-    def forward(self, noise, real_shapes, noise_amp):
+        print('see if self.taps body has changed due to the append here,see difference between shallow_copy and self.body');import pdb; pdb.set_trace()
+    def forward(self, noise, real_shapes, noise_amp,taps=[]):
         x = self.head(self._pad(noise[0]))
 
         # we do some upsampling for training models for unconditional generation to increase
@@ -99,7 +106,11 @@ class GrowingGenerator(nn.Module):
             x = upsample(x, size=[x.shape[2] + 2, x.shape[3] + 2])
         x = self._pad_block(x)
         x_prev_out = self.body[0](x)
-
+        #-------------------------------------------------
+        if len(self.taps) > 0:
+            tap = self.tails[0](self._pad(x_prev_out))
+            self.taps.append(tap)
+        #-------------------------------------------------
         for idx, block in enumerate(self.body[1:], 1):
             if self.opt.train_mode == "generation" or self.opt.train_mode == "animation":
                 x_prev_out_1 = upsample(x_prev_out, size=[real_shapes[idx][2], real_shapes[idx][3]])
@@ -107,9 +118,15 @@ class GrowingGenerator(nn.Module):
                                                           real_shapes[idx][3] + self.opt.num_layer*2])
                 x_prev = block(x_prev_out_2 + noise[idx] * noise_amp[idx])
             else:
+                assert False,f'shouldnt be here train_mode:{self.opt.train_mode}'
                 x_prev_out_1 = upsample(x_prev_out, size=real_shapes[idx][2:])
                 x_prev = block(self._pad_block(x_prev_out_1+noise[idx]*noise_amp[idx]))
             x_prev_out = x_prev + x_prev_out_1
-
+            #-------------------------------------------------
+            if len(self.taps) > idx:
+                tap = self.tails[idx](self._pad(x_prev_out))
+                self.taps.append(tap)
+            #-------------------------------------------------
+        print('see self.taps shape');import pdb;pdb.set_trace()
         out = self.tail(self._pad(x_prev_out))
         return out
